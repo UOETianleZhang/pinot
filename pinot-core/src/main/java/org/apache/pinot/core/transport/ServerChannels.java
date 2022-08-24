@@ -21,9 +21,11 @@ package org.apache.pinot.core.transport;
 import io.netty.bootstrap.Bootstrap;
 import io.netty.buffer.Unpooled;
 import io.netty.channel.Channel;
+import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelInitializer;
 import io.netty.channel.ChannelOption;
 import io.netty.channel.EventLoopGroup;
+import io.netty.channel.SimpleChannelInboundHandler;
 import io.netty.channel.epoll.EpollEventLoopGroup;
 import io.netty.channel.epoll.EpollSocketChannel;
 import io.netty.channel.kqueue.KQueueEventLoopGroup;
@@ -31,8 +33,13 @@ import io.netty.channel.kqueue.KQueueSocketChannel;
 import io.netty.channel.nio.NioEventLoopGroup;
 import io.netty.channel.socket.SocketChannel;
 import io.netty.channel.socket.nio.NioSocketChannel;
-import io.netty.handler.codec.LengthFieldBasedFrameDecoder;
-import io.netty.handler.codec.LengthFieldPrepender;
+import io.netty.handler.codec.http2.DefaultHttp2DataFrame;
+import io.netty.handler.codec.http2.DefaultHttp2Headers;
+import io.netty.handler.codec.http2.DefaultHttp2HeadersFrame;
+import io.netty.handler.codec.http2.Http2FrameCodecBuilder;
+import io.netty.handler.codec.http2.Http2Headers;
+import io.netty.handler.codec.http2.Http2MultiplexHandler;
+import io.netty.handler.codec.http2.Http2StreamChannelBootstrap;
 import io.netty.handler.ssl.SslContextBuilder;
 import io.netty.handler.ssl.SslProvider;
 import java.util.concurrent.ConcurrentHashMap;
@@ -53,6 +60,8 @@ import org.apache.pinot.core.util.OsCheck;
 import org.apache.thrift.TSerializer;
 import org.apache.thrift.protocol.TCompactProtocol;
 import org.apache.thrift.transport.TTransportException;
+
+import static io.netty.handler.codec.http.HttpResponseStatus.*;
 
 
 /**
@@ -132,12 +141,13 @@ public class ServerChannels {
     final Bootstrap _bootstrap;
     // lock to protect channel as requests must be written into channel sequentially
     final ReentrantLock _channelLock = new ReentrantLock();
-    Channel _channel;
+    Channel _http2StreamChannel; // HTTP/2 stram channel
 
     ServerChannel(ServerRoutingInstance serverRoutingInstance) {
       _serverRoutingInstance = serverRoutingInstance;
       _bootstrap = new Bootstrap().remoteAddress(serverRoutingInstance.getHostname(), serverRoutingInstance.getPort())
-          .group(_eventLoopGroup).channel(_channelClass).option(ChannelOption.SO_KEEPALIVE, true)
+          .group(_eventLoopGroup).channel(_channelClass)
+          .option(ChannelOption.SO_KEEPALIVE, true)
           .handler(new ChannelInitializer<SocketChannel>() {
             @Override
             protected void initChannel(SocketChannel ch) {
@@ -145,12 +155,15 @@ public class ServerChannels {
                 attachSSLHandler(ch);
               }
 
-              ch.pipeline()
-                  .addLast(new LengthFieldBasedFrameDecoder(Integer.MAX_VALUE, 0, Integer.BYTES, 0, Integer.BYTES),
-                      new LengthFieldPrepender(Integer.BYTES),
-                      // NOTE: data table de-serialization happens inside this handler
-                      // Revisit if this becomes a bottleneck
-                      new DataTableHandler(_queryRouter, _serverRoutingInstance, _brokerMetrics));
+              // Encode and decode the message in a way of HTTP/2
+              ch.pipeline().addLast(Http2FrameCodecBuilder.forClient().build());
+              // Enable HTTP/2 multiplexing. The real handler is in DataTableHandler
+              ch.pipeline().addLast(new Http2MultiplexHandler(new SimpleChannelInboundHandler() {
+                @Override
+                protected void channelRead0(ChannelHandlerContext ctx, Object msg) {
+                  // NOOP (this is the handler for 'inbound' streams, which is a server push)
+                }
+              }));
             }
           });
     }
@@ -191,9 +204,15 @@ public class ServerChannels {
 
     void connectWithoutLocking()
         throws InterruptedException {
-      if (_channel == null || !_channel.isActive()) {
+      if (_http2StreamChannel == null || !_http2StreamChannel.isActive()) {
         long startTime = System.currentTimeMillis();
-        _channel = _bootstrap.connect().sync().channel();
+        Channel channel = _bootstrap.connect().sync().channel();
+
+        final Http2StreamChannelBootstrap streamChannelBootstrap = new Http2StreamChannelBootstrap(channel);
+        _http2StreamChannel = streamChannelBootstrap.open().syncUninterruptibly().getNow();
+        // NOTE: data table de-serialization happens inside this DataTableHandler
+        // Revisit if this becomes a bottleneck
+        _http2StreamChannel.pipeline().addLast(new DataTableHandler(_queryRouter, _serverRoutingInstance, _brokerMetrics));
         _brokerMetrics.setValueOfGlobalGauge(BrokerGauge.NETTY_CONNECTION_CONNECT_TIME_MS,
             System.currentTimeMillis() - startTime);
       }
@@ -202,7 +221,14 @@ public class ServerChannels {
     void sendRequestWithoutLocking(String rawTableName, AsyncQueryResponse asyncQueryResponse,
         ServerRoutingInstance serverRoutingInstance, byte[] requestBytes) {
       long startTimeMs = System.currentTimeMillis();
-      _channel.writeAndFlush(Unpooled.wrappedBuffer(requestBytes)).addListener(f -> {
+
+      // Write HTTP/2 header frame
+      Http2Headers headers = new DefaultHttp2Headers();
+      headers.status(OK.toString());
+      _http2StreamChannel.write(new DefaultHttp2HeadersFrame(headers));
+
+      DefaultHttp2DataFrame dataFrame = new DefaultHttp2DataFrame(Unpooled.wrappedBuffer(requestBytes), true);
+      _http2StreamChannel.writeAndFlush(dataFrame).addListener(f -> {
         long requestSentLatencyMs = System.currentTimeMillis() - startTimeMs;
         _brokerMetrics.addTimedTableValue(rawTableName, BrokerTimer.NETTY_CONNECTION_SEND_REQUEST_LATENCY,
             requestSentLatencyMs, TimeUnit.MILLISECONDS);
@@ -224,5 +250,6 @@ public class ServerChannels {
         throw new TimeoutException(CHANNEL_LOCK_TIMEOUT_MSG);
       }
     }
+
   }
 }

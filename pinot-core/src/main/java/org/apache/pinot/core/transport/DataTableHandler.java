@@ -21,6 +21,8 @@ package org.apache.pinot.core.transport;
 import io.netty.buffer.ByteBuf;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.SimpleChannelInboundHandler;
+import io.netty.handler.codec.http2.Http2DataFrame;
+import io.netty.handler.codec.http2.Http2StreamFrame;
 import org.apache.pinot.common.metrics.BrokerMeter;
 import org.apache.pinot.common.metrics.BrokerMetrics;
 import org.apache.pinot.common.utils.DataTable;
@@ -33,7 +35,7 @@ import org.slf4j.LoggerFactory;
  * The {@code DataTableHandler} is the Netty inbound handler on Pinot Broker side to handle the serialized data table
  * responses sent from Pinot Server.
  */
-public class DataTableHandler extends SimpleChannelInboundHandler<ByteBuf> {
+public class DataTableHandler extends SimpleChannelInboundHandler<Http2StreamFrame> {
   private static final Logger LOGGER = LoggerFactory.getLogger(DataTableHandler.class);
 
   private final QueryRouter _queryRouter;
@@ -60,7 +62,12 @@ public class DataTableHandler extends SimpleChannelInboundHandler<ByteBuf> {
   }
 
   @Override
-  protected void channelRead0(ChannelHandlerContext ctx, ByteBuf msg) {
+  protected void channelRead0(ChannelHandlerContext ctx, Http2StreamFrame message) {
+    if (!(message instanceof Http2DataFrame)) {
+      return;
+    }
+    LOGGER.info("DataTableHandler gets an http data frame: {}", message);
+    ByteBuf msg = ((Http2DataFrame) message).content();
     int responseSize = msg.readableBytes();
     _brokerMetrics.addMeteredGlobalValue(BrokerMeter.NETTY_CONNECTION_BYTES_RECEIVED, responseSize);
     try {

@@ -31,8 +31,8 @@ import io.netty.channel.nio.NioEventLoopGroup;
 import io.netty.channel.socket.ServerSocketChannel;
 import io.netty.channel.socket.SocketChannel;
 import io.netty.channel.socket.nio.NioServerSocketChannel;
-import io.netty.handler.codec.LengthFieldBasedFrameDecoder;
-import io.netty.handler.codec.LengthFieldPrepender;
+import io.netty.handler.codec.http2.Http2FrameCodecBuilder;
+import io.netty.handler.codec.http2.Http2MultiplexHandler;
 import io.netty.handler.ssl.ClientAuth;
 import io.netty.handler.ssl.SslContextBuilder;
 import io.netty.handler.ssl.SslProvider;
@@ -61,8 +61,7 @@ public class QueryServer {
   private EventLoopGroup _bossGroup;
   private EventLoopGroup _workerGroup;
   private Class<? extends ServerSocketChannel> _channelClass;
-  private Channel _channel;
-
+  private Channel _http2StreamChannel;
 
   /**
    * Create an unsecured server instance
@@ -84,11 +83,10 @@ public class QueryServer {
    * @param serverMetrics server metrics
    * @param nettyConfig configurations for netty library
    * @param tlsConfig TLS/SSL config
-   * @param accessControlFactory access control factory for netty channel
+   * @param accessControl access control factory for netty channel
    */
   public QueryServer(int port, QueryScheduler queryScheduler, ServerMetrics serverMetrics, NettyConfig nettyConfig,
-      TlsConfig tlsConfig,
-      AccessControl accessControl) {
+      TlsConfig tlsConfig, AccessControl accessControl) {
     _port = port;
     _queryScheduler = queryScheduler;
     _serverMetrics = serverMetrics;
@@ -114,8 +112,10 @@ public class QueryServer {
   public void start() {
     try {
       ServerBootstrap serverBootstrap = new ServerBootstrap();
-      _channel = serverBootstrap.group(_bossGroup, _workerGroup).channel(_channelClass)
-          .option(ChannelOption.SO_BACKLOG, 128).childOption(ChannelOption.SO_KEEPALIVE, true)
+      _http2StreamChannel = serverBootstrap.group(_bossGroup, _workerGroup)
+          .channel(_channelClass)
+          .option(ChannelOption.SO_BACKLOG, 128)
+          .childOption(ChannelOption.SO_KEEPALIVE, true)
           .childHandler(new ChannelInitializer<SocketChannel>() {
             @Override
             protected void initChannel(SocketChannel ch) {
@@ -123,12 +123,15 @@ public class QueryServer {
                 attachSSLHandler(ch);
               }
 
-              ch.pipeline()
-                  .addLast(new LengthFieldBasedFrameDecoder(Integer.MAX_VALUE, 0, Integer.BYTES, 0, Integer.BYTES),
-                      new LengthFieldPrepender(Integer.BYTES),
-                      new InstanceRequestHandler(_queryScheduler, _serverMetrics, _accessControl));
+              // Encode & decode in a way of HTTP/2 and enable multiplexing
+              ch.pipeline().addLast(
+                  Http2FrameCodecBuilder.forServer().build(),
+                  new Http2MultiplexHandler(new InstanceRequestHandler(_queryScheduler, _serverMetrics, _accessControl)));
             }
-          }).bind(_port).sync().channel();
+          })
+          .bind(_port)
+          .sync()
+          .channel();
     } catch (Exception e) {
       // Shut down immediately
       _workerGroup.shutdownGracefully(0, 0, TimeUnit.SECONDS);
@@ -143,8 +146,7 @@ public class QueryServer {
         throw new IllegalArgumentException("Must provide key store path for secured server");
       }
 
-      SslContextBuilder sslContextBuilder = SslContextBuilder
-          .forServer(TlsUtils.createKeyManagerFactory(_tlsConfig))
+      SslContextBuilder sslContextBuilder = SslContextBuilder.forServer(TlsUtils.createKeyManagerFactory(_tlsConfig))
           .sslProvider(SslProvider.valueOf(_tlsConfig.getSslProvider()));
 
       if (_tlsConfig.getTrustStorePath() != null) {
@@ -163,7 +165,7 @@ public class QueryServer {
 
   public void shutDown() {
     try {
-      _channel.close().sync();
+      _http2StreamChannel.close().sync();
     } catch (Exception e) {
       throw new RuntimeException(e);
     } finally {

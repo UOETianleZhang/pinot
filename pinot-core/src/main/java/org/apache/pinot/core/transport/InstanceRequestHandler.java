@@ -25,6 +25,13 @@ import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.SimpleChannelInboundHandler;
+import io.netty.handler.codec.http2.DefaultHttp2DataFrame;
+import io.netty.handler.codec.http2.DefaultHttp2Headers;
+import io.netty.handler.codec.http2.DefaultHttp2HeadersFrame;
+import io.netty.handler.codec.http2.Http2DataFrame;
+import io.netty.handler.codec.http2.Http2FrameStream;
+import io.netty.handler.codec.http2.Http2Headers;
+import io.netty.handler.codec.http2.Http2StreamFrame;
 import io.netty.handler.ssl.SslHandshakeCompletionEvent;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
@@ -49,12 +56,14 @@ import org.apache.thrift.transport.TTransportException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import static io.netty.handler.codec.http.HttpResponseStatus.*;
+
 
 /**
  * The {@code InstanceRequestHandler} is the Netty inbound handler on Pinot Server side to handle the serialized
  * instance requests sent from Pinot Broker.
  */
-public class InstanceRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
+public class InstanceRequestHandler extends SimpleChannelInboundHandler<Http2StreamFrame> {
   private static final Logger LOGGER = LoggerFactory.getLogger(InstanceRequestHandler.class);
 
   // TODO: make it configurable
@@ -64,6 +73,8 @@ public class InstanceRequestHandler extends SimpleChannelInboundHandler<ByteBuf>
   private final QueryScheduler _queryScheduler;
   private final ServerMetrics _serverMetrics;
   private final AccessControl _accessControl;
+
+  private Http2FrameStream _stream;
 
   public InstanceRequestHandler(QueryScheduler queryScheduler, ServerMetrics serverMetrics,
       AccessControl accessControl) {
@@ -93,7 +104,14 @@ public class InstanceRequestHandler extends SimpleChannelInboundHandler<ByteBuf>
    * will keep waiting until timeout.
    */
   @Override
-  protected void channelRead0(ChannelHandlerContext ctx, ByteBuf msg) {
+  protected void channelRead0(ChannelHandlerContext ctx, Http2StreamFrame message) {
+    if (!(message instanceof Http2DataFrame)) {
+      return;
+    }
+    LOGGER.info("DataTableHandler gets an http frame: {}", message);
+    ByteBuf msg = ((Http2DataFrame) message).content();
+    this._stream = message.stream();
+
     long queryArrivalTimeMs = 0;
     InstanceRequest instanceRequest = null;
     byte[] requestBytes = null;
@@ -199,7 +217,13 @@ public class InstanceRequestHandler extends SimpleChannelInboundHandler<ByteBuf>
       byte[] serializedDataTable) {
     long sendResponseStartTimeMs = System.currentTimeMillis();
     int queryProcessingTimeMs = (int) (sendResponseStartTimeMs - queryArrivalTimeMs);
-    ctx.writeAndFlush(Unpooled.wrappedBuffer(serializedDataTable)).addListener(f -> {
+
+    // Write HTTP/2 header frame
+    Http2Headers headers = new DefaultHttp2Headers().status(OK.toString());
+    ctx.write(new DefaultHttp2HeadersFrame(headers));
+
+    DefaultHttp2DataFrame dataFrame = new DefaultHttp2DataFrame(Unpooled.wrappedBuffer(serializedDataTable), true);
+    ctx.writeAndFlush(dataFrame).addListener(f -> {
       long sendResponseEndTimeMs = System.currentTimeMillis();
       int sendResponseLatencyMs = (int) (sendResponseEndTimeMs - sendResponseStartTimeMs);
       _serverMetrics.addMeteredGlobalValue(ServerMeter.NETTY_CONNECTION_RESPONSES_SENT, 1);

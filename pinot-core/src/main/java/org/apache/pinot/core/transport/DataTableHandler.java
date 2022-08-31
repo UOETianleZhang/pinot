@@ -19,10 +19,14 @@
 package org.apache.pinot.core.transport;
 
 import io.netty.buffer.ByteBuf;
+import io.netty.buffer.ByteBufUtil;
+import io.netty.buffer.Unpooled;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.SimpleChannelInboundHandler;
 import io.netty.handler.codec.http2.Http2DataFrame;
 import io.netty.handler.codec.http2.Http2StreamFrame;
+import java.util.HashMap;
+import java.util.Map;
 import org.apache.pinot.common.metrics.BrokerMeter;
 import org.apache.pinot.common.metrics.BrokerMetrics;
 import org.apache.pinot.common.utils.DataTable;
@@ -41,12 +45,14 @@ public class DataTableHandler extends SimpleChannelInboundHandler<Http2StreamFra
   private final QueryRouter _queryRouter;
   private final ServerRoutingInstance _serverRoutingInstance;
   private final BrokerMetrics _brokerMetrics;
+  private final Map<Integer, ByteBuf> _unfinishedDataFrames;
 
   public DataTableHandler(QueryRouter queryRouter, ServerRoutingInstance serverRoutingInstance,
       BrokerMetrics brokerMetrics) {
     _queryRouter = queryRouter;
     _serverRoutingInstance = serverRoutingInstance;
     _brokerMetrics = brokerMetrics;
+    _unfinishedDataFrames = new HashMap<>();
   }
 
   @Override
@@ -66,8 +72,22 @@ public class DataTableHandler extends SimpleChannelInboundHandler<Http2StreamFra
     if (!(message instanceof Http2DataFrame)) {
       return;
     }
-    LOGGER.info("DataTableHandler gets an http data frame: {}", message);
+    int streamId = message.stream().id();
+    LOGGER.info("DataTableHandler gets an http data frame in stream {}: {}", streamId, message);
+
+    // check if we have previous data for the same stream and combine two parts
     ByteBuf msg = ((Http2DataFrame) message).content();
+    if (_unfinishedDataFrames.containsKey(streamId)) {
+      // retain() will increase the reference count of the msg by one to keep it
+      msg = Unpooled.wrappedBuffer(_unfinishedDataFrames.get(streamId), msg.retain());
+    }
+    _unfinishedDataFrames.put(streamId, msg);
+
+    if (!((Http2DataFrame) message).isEndStream()) {
+      return;
+    }
+    _unfinishedDataFrames.remove(streamId);
+
     int responseSize = msg.readableBytes();
     _brokerMetrics.addMeteredGlobalValue(BrokerMeter.NETTY_CONNECTION_BYTES_RECEIVED, responseSize);
     try {

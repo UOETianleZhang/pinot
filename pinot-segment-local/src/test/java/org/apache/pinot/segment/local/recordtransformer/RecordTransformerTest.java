@@ -66,7 +66,7 @@ public class RecordTransformerTest {
   private static GenericRow getRecord() {
     GenericRow record = new GenericRow();
     record.putValue("svInt", (byte) 123);
-    record.putValue("svLong", (char) 123);
+    record.putValue("svLong", (short) 123);
     record.putValue("svFloat", Collections.singletonList((short) 123));
     record.putValue("svDouble", new String[]{"123"});
     record.putValue("svBoolean", "true");
@@ -304,6 +304,27 @@ public class RecordTransformerTest {
 
     // expression true, filtered
     ingestionConfig.setFilterConfig(new FilterConfig("svLong = 123"));
+    genericRow = getRecord();
+    transformer = new FilterTransformer(tableConfig);
+    transformer.transform(genericRow);
+    Assert.assertTrue(genericRow.getFieldToValueMap().containsKey(GenericRow.SKIP_RECORD_KEY));
+
+    // expression true, filtered
+    ingestionConfig.setFilterConfig(new FilterConfig("svLong != 'abc'"));
+    genericRow = getRecord();
+    transformer = new FilterTransformer(tableConfig);
+    transformer.transform(genericRow);
+    Assert.assertTrue(genericRow.getFieldToValueMap().containsKey(GenericRow.SKIP_RECORD_KEY));
+
+    // expression true, filtered
+    ingestionConfig.setFilterConfig(new FilterConfig("svStringWithLengthLimit != '125'"));
+    genericRow = getRecord();
+    transformer = new FilterTransformer(tableConfig);
+    transformer.transform(genericRow);
+    Assert.assertTrue(genericRow.getFieldToValueMap().containsKey(GenericRow.SKIP_RECORD_KEY));
+
+    // expression true, filtered
+    ingestionConfig.setFilterConfig(new FilterConfig("svStringWithLengthLimit = '123'"));
     genericRow = getRecord();
     transformer = new FilterTransformer(tableConfig);
     transformer.transform(genericRow);

@@ -114,6 +114,83 @@ public class InbuiltFunctionEvaluatorTest {
   }
 
   @Test
+  public void testColumnNotEqualWithLiteralTrue() {
+    String expression = "testColumn != 'SHOULD_NOT_EQUAL_TO_THIS_STRING'";
+    InbuiltFunctionEvaluator evaluator = new InbuiltFunctionEvaluator(expression);
+
+    GenericRow row = new GenericRow();
+    String value = "testValue";
+    row.putValue("testColumn", value);
+
+    assertEquals(evaluator.getArguments(), Collections.singletonList("testColumn"));
+    assertEquals(evaluator.evaluate(row), true);
+  }
+
+  @Test
+  public void testColumnNotEqualWithLiteralFalse() {
+    String expression = "testColumn != 'testValue'";
+    InbuiltFunctionEvaluator evaluator = new InbuiltFunctionEvaluator(expression);
+
+    GenericRow row = new GenericRow();
+    String value = "testValue";
+    row.putValue("testColumn", value);
+
+    assertEquals(evaluator.getArguments(), Collections.singletonList("testColumn"));
+    assertEquals(evaluator.evaluate(row), false);
+  }
+
+  @Test
+  public void testColumnEqualWithLiteralFalse() {
+    String expression = "testColumn = 'SHOULD_NOT_EQUAL_TO_THIS_STRING'";
+    InbuiltFunctionEvaluator evaluator = new InbuiltFunctionEvaluator(expression);
+
+    GenericRow row = new GenericRow();
+    String value = "testValue";
+    row.putValue("testColumn", value);
+
+    assertEquals(evaluator.getArguments(), Collections.singletonList("testColumn"));
+    assertEquals(evaluator.evaluate(row), false);
+  }
+
+  @Test
+  public void testColumnEqualWithLiteralTrue() {
+    String expression = "testColumn = 'testValue'";
+    InbuiltFunctionEvaluator evaluator = new InbuiltFunctionEvaluator(expression);
+
+    GenericRow row = new GenericRow();
+    String value = "testValue";
+    row.putValue("testColumn", value);
+
+    assertEquals(evaluator.getArguments(), Collections.singletonList("testColumn"));
+    assertEquals(evaluator.evaluate(row), true);
+  }
+
+  @Test
+  public void testColumnEqualWithDoubleFalse() {
+    String expression = "testColumn = 1.0";
+    InbuiltFunctionEvaluator evaluator = new InbuiltFunctionEvaluator(expression);
+
+    GenericRow row = new GenericRow();
+    String value = "testValue";
+    row.putValue("testColumn", value);
+
+    assertEquals(evaluator.getArguments(), Collections.singletonList("testColumn"));
+    assertEquals(evaluator.evaluate(row), false);
+  }
+
+  @Test
+  public void testColumnEqualWithDoubleTrue() {
+    String expression = "testColumn = '10.0'";
+    InbuiltFunctionEvaluator evaluator = new InbuiltFunctionEvaluator(expression);
+
+    GenericRow row = new GenericRow();
+    row.putValue("testColumn", 10);
+
+    assertEquals(evaluator.getArguments(), Collections.singletonList("testColumn"));
+    assertEquals(evaluator.evaluate(row), true);
+  }
+
+  @Test
   public void testNestedFunction() {
     String expression = "reverse(reverse(testColumn))";
     InbuiltFunctionEvaluator evaluator = new InbuiltFunctionEvaluator(expression);

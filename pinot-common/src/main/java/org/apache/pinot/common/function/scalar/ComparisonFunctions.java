@@ -18,6 +18,8 @@
  */
 package org.apache.pinot.common.function.scalar;
 
+import java.util.Objects;
+import org.apache.commons.lang3.math.NumberUtils;
 import org.apache.pinot.spi.annotations.ScalarFunction;
 
 
@@ -49,14 +51,30 @@ public class ComparisonFunctions {
   }
 
   @ScalarFunction(names = {"not_equals", "notEquals"})
-  public static boolean notEquals(double a, double b) {
-    return Math.abs(a - b) >= DOUBLE_COMPARISON_TOLERANCE;
+  public static boolean notEquals(String a, String b) {
+    return !equals(a, b);
   }
 
+  /**
+   * Compares two elements for equality, taking into account overloaded situations where '=' can be used between strings,
+   * integers, floats and nulls. The function handles the comparison of numeric values with a tolerance for floating-point
+   * approximations and appropriately compares non-numeric strings.
+   */
   @ScalarFunction
-  public static boolean equals(double a, double b) {
-    // To avoid approximation errors
-    return Math.abs(a - b) < DOUBLE_COMPARISON_TOLERANCE;
+  public static boolean equals(String a, String b) {
+    boolean isNumberA = NumberUtils.isCreatable(a);
+    boolean isNumberB = NumberUtils.isCreatable(b);
+
+    if (isNumberA && isNumberB) {
+      // To avoid approximation errors. Both integer and float can be handled.
+      return Math.abs(Double.parseDouble(a) - Double.parseDouble(b)) < DOUBLE_COMPARISON_TOLERANCE;
+    } else if (isNumberA || isNumberB) {
+      // If one is a number and the other one is a string, they can't be equal.
+      return false;
+    } else {
+      // They are both strings. Null is handled in the condition below.
+      return Objects.equals(a, b);
+    }
   }
 
   @ScalarFunction
